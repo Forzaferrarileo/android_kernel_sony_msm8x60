@@ -199,6 +199,10 @@
 #define DSPS_PIL_GENERIC_NAME		"dsps"
 #define DSPS_PIL_FLUID_NAME		"dsps_fluid"
 
+#ifdef CONFIG_CPU_FREQ_GOV_INTELLIDEMAND
+int id_set_two_phase_freq(int cpufreq);
+#endif
+
 #ifdef CONFIG_ION_MSM
 static struct platform_device ion_dev;
 #endif
@@ -2818,12 +2822,16 @@ static struct resource hdmi_msm_resources[] = {
 static int hdmi_enable_5v(int on);
 static int hdmi_core_power(int on, int show);
 static int hdmi_cec_power(int on);
+static int hdmi_gpio_config(int on);
+static int hdmi_panel_power(int on);
 
 static struct msm_hdmi_platform_data hdmi_msm_data = {
 	.irq = HDMI_IRQ,
 	.enable_5v = hdmi_enable_5v,
 	.core_power = hdmi_core_power,
 	.cec_power = hdmi_cec_power,
+	.gpio_config = hdmi_gpio_config,
+	.panel_power = hdmi_panel_power,
 };
 
 static struct platform_device hdmi_msm_device = {
@@ -6804,6 +6812,32 @@ static int hdmi_core_power(int on, int show)
 				"8058_l16", rc);
 			return rc;
 		}
+		pr_info("%s(on): success\n", __func__);
+	} else {
+		gpio_free(170);
+		gpio_free(171);
+		gpio_free(172);
+		rc = regulator_disable(reg_8058_l16);
+		if (rc)
+			pr_warning("'%s' regulator disable failed, rc=%d\n",
+				"8058_l16", rc);
+		pr_info("%s(off): success\n", __func__);
+	}
+
+	prev_on = on;
+
+	return 0;
+}
+
+static int hdmi_gpio_config(int on)
+{
+	int rc = 0;
+	static int prev_on;
+
+	if (on == prev_on)
+		return 0;
+
+	if (on) {
 		rc = gpio_request(170, "HDMI_DDC_CLK");
 		if (rc) {
 			pr_err("'%s'(%d) gpio_request failed, rc=%d\n",
@@ -6822,16 +6856,14 @@ static int hdmi_core_power(int on, int show)
 				"HDMI_HPD", 172, rc);
 			goto error3;
 		}
-		pr_info("%s(on): success\n", __func__);
+		pr_debug("%s(on): success\n", __func__);
+
 	} else {
 		gpio_free(170);
 		gpio_free(171);
 		gpio_free(172);
-		rc = regulator_disable(reg_8058_l16);
-		if (rc)
-			pr_warning("'%s' regulator disable failed, rc=%d\n",
-				"8058_l16", rc);
-		pr_info("%s(off): success\n", __func__);
+
+		pr_debug("%s(off): success\n", __func__);
 	}
 
 	prev_on = on;
@@ -6843,7 +6875,6 @@ error3:
 error2:
 	gpio_free(170);
 error1:
-	regulator_disable(reg_8058_l16);
 	return rc;
 }
 
@@ -6872,6 +6903,19 @@ static int hdmi_cec_power(int on)
 
 	return 0;
 error:
+	return rc;
+}
+
+static int hdmi_panel_power(int on)
+{
+	int rc;
+
+	pr_debug("%s: HDMI Core: %s\n", __func__, (on ? "ON" : "OFF"));
+	rc = hdmi_core_power(on, 1);
+	if (rc)
+		rc = hdmi_cec_power(on);
+
+	pr_debug("%s: HDMI Core: %s Success\n", __func__, (on ? "ON" : "OFF"));
 	return rc;
 }
 
@@ -7773,7 +7817,12 @@ static struct msm_board_data msm8x60_fuji_board_data __initdata = {
 
 static void __init msm8x60_init(struct msm_board_data *board_data)
 {
+
 	uint32_t soc_platform_version;
+
+	#ifdef CONFIG_CPU_FREQ_GOV_INTELLIDEMAND
+	  id_set_two_phase_freq(1134000);
+	#endif
 
 	pmic_reset_irq = PM8058_IRQ_BASE + PM8058_RESOUT_IRQ;
 	/*
